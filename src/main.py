@@ -1,5 +1,10 @@
 """Yahoo!オークションのウォッチリストを取得し、残り時間の短い順に並べて
-Google Apps Script 経由でGoogleドキュメントを新規作成するエントリーポイント。
+Google Apps Script 経由でGoogleドキュメントに書き込むエントリーポイント。
+
+ドキュメントには商品名だけを書き出す(残り時間・リンクは含めない)。
+DOC_URL を設定した場合は、そのドキュメントの一番上に
+「見出し(終了日) + 商品名リスト」を追記する(過去の内容はそのまま下に残る)。
+DOC_URL が未設定の場合は、実行のたびに新規ドキュメントを作成する。
 
 使い方:
     python src/main.py            通常実行
@@ -20,12 +25,12 @@ from dotenv import load_dotenv
 
 from yahoo_watchlist import AuthError, WatchlistItem, fetch_watchlist
 
-TITLE_SUFFIX = "ヤフオク"
+HEADING_SUFFIX = "ヤフオク"
 
 
-def build_title(earliest: WatchlistItem, now: dt.datetime) -> str:
+def build_heading(earliest: WatchlistItem, now: dt.datetime) -> str:
     end_dt = now + dt.timedelta(seconds=earliest.remaining_seconds or 0)
-    return f"{end_dt.year}年 {end_dt.month}月 {end_dt.day}日 {TITLE_SUFFIX}"
+    return f"{end_dt.year}年 {end_dt.month}月 {end_dt.day}日 {HEADING_SUFFIX}"
 
 
 def sort_key(item: WatchlistItem) -> int:
@@ -33,19 +38,17 @@ def sort_key(item: WatchlistItem) -> int:
     return item.remaining_seconds if item.remaining_seconds is not None else sys.maxsize
 
 
-def post_to_apps_script(url: str, token: str, title: str, items: list[WatchlistItem]) -> dict:
+def post_to_apps_script(
+    url: str, token: str, heading: str, items: list[WatchlistItem], doc_url: str
+) -> dict:
     payload = {
         "token": token,
-        "title": title,
-        "items": [
-            {
-                "name": item.name,
-                "url": item.url,
-                "remainingText": item.remaining_text,
-            }
-            for item in items
-        ],
+        "title": heading,
+        "heading": heading,
+        "items": [{"name": item.name} for item in items],
     }
+    if doc_url:
+        payload["docUrl"] = doc_url
     resp = requests.post(url, json=payload, timeout=60)
     resp.raise_for_status()
     return resp.json()
@@ -61,6 +64,7 @@ def main() -> int:
     cookie = os.environ.get("YAHOO_COOKIE", "").strip()
     apps_script_url = os.environ.get("APPS_SCRIPT_URL", "").strip()
     apps_script_token = os.environ.get("APPS_SCRIPT_TOKEN", "").strip()
+    doc_url = os.environ.get("DOC_URL", "").strip()
 
     if not cookie:
         print("エラー: .env の YAHOO_COOKIE が設定されていません。", file=sys.stderr)
@@ -86,24 +90,23 @@ def main() -> int:
     items.sort(key=sort_key)
 
     now = dt.datetime.now()
-    title = build_title(items[0], now)
+    heading = build_heading(items[0], now)
 
     print(f"取得件数: {len(items)}件")
-    print(f"ドキュメントタイトル: {title}")
+    print(f"見出し/タイトル: {heading}")
     for i, item in enumerate(items, start=1):
-        remaining = item.remaining_text or "(残り時間不明)"
-        print(f"  {i}. {item.name} - {remaining}")
+        print(f"  {i}. {item.name}")
 
     if args.dry_run:
         print("\n--dry-run のためドキュメントは作成していません。")
         return 0
 
-    result = post_to_apps_script(apps_script_url, apps_script_token, title, items)
+    result = post_to_apps_script(apps_script_url, apps_script_token, heading, items, doc_url)
     if not result.get("ok"):
         print(f"エラー: Apps Script側でエラーが発生しました: {result.get('error')}", file=sys.stderr)
         return 1
 
-    print(f"\n作成しました: {result.get('url')}")
+    print(f"\n書き込みました: {result.get('url')}")
     return 0
 
 
